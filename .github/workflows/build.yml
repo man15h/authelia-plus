@@ -7,7 +7,9 @@
 # architecture, then the official Dockerfile copies it onto authelia/base,
 # pinned by digest to the base tag of the upstream release this branch is on.
 # dev pushes `alpha`; main pushes `latest`, `stable` and the next
-# `v<upstream>-plus.<n>` version, then tags and releases it.
+# `v<upstream>-plus.<n>` version, then tags and releases it with a changelog
+# of the commits since the previous release. Merge dev into main with a merge
+# commit: a squash leaves one commit for the changelog to list.
 name: Build & Push Docker Image
 
 on:
@@ -159,8 +161,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Tag and GitHub release for a main build, with the image under the notes
-  # by tag and by digest.
+  # Tag and GitHub release for a main build: a changelog from the commits
+  # since the last release, then the image by tag and by digest.
   release:
     if: github.ref == 'refs/heads/main'
     needs: [version, image]
@@ -168,6 +170,57 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # the changelog range starts at a tag
+          persist-credentials: false
+
+      # Non-merge commit subjects since the previous -plus release, or since
+      # the upstream release for the first one on it, grouped by conventional
+      # type. Subjects only ever pass through git log and awk, never the shell.
+      # An explicit bash shell adds pipefail, so a failing git log fails the
+      # release instead of shipping it without a changelog.
+      - name: Changelog
+        shell: bash
+        env:
+          UPSTREAM: ${{ needs.version.outputs.upstream }}
+        # yamllint disable rule:indentation
+        run: |
+          N=$(git tag -l "v${UPSTREAM}-plus.*" | sed 's/.*-plus\.//' | sort -n | tail -n 1)
+          FROM="v${UPSTREAM}${N:+-plus.${N}}"
+          git log --reverse --no-merges --abbrev=7 --format='%h%x09%s' "${FROM}..${GITHUB_SHA}" |
+            awk -F '\t' '
+              BEGIN { n = split("Features|Fixes|CI/Build|Docs|Other", groups, "|") }
+              {
+                group = "Other"
+                line = $2
+                if (match($2, /^[a-z]+(\([^)]*\))?!?: /)) {
+                  head = substr($2, 1, RLENGTH - 2)
+                  line = substr($2, RLENGTH + 1)
+                  type = head
+                  sub(/[(!].*/, "", type)
+                  if (type == "feat") group = "Features"
+                  else if (type == "fix") group = "Fixes"
+                  else if (type == "ci" || type == "build") group = "CI/Build"
+                  else if (type == "docs") group = "Docs"
+                  if (head ~ /\(/) {
+                    scope = head
+                    sub(/^[^(]*\(/, "", scope)
+                    sub(/\)!?$/, "", scope)
+                    line = "**" scope ":** " line
+                  }
+                  if (head ~ /!$/) line = line " **(breaking)**"
+                }
+                items[group] = items[group] "- " line " (`" $1 "`)\n"
+              }
+              END {
+                for (i = 1; i <= n; i++) {
+                  if (groups[i] in items) printf "### %s\n\n%s\n", groups[i], items[groups[i]]
+                }
+              }
+            ' > changes.md
+        # yamllint enable rule:indentation
+
       - name: Tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -179,9 +232,10 @@ jobs:
         run: |
           # Lowercased, as metadata-action pushed it.
           IMG=${IMG,,}
-          cat > notes.md <<EOF
-          authelia-plus ${V}, on upstream Authelia v${UPSTREAM}, built from ${GITHUB_SHA::7}.
-
+          TITLE="authelia-plus ${V}, on upstream Authelia v${UPSTREAM}, built from ${GITHUB_SHA::7}."
+          printf '%s\n\n' "$TITLE" > notes.md
+          cat changes.md >> notes.md
+          cat >> notes.md <<EOF
           ### Docker image
 
           \`\`\`
