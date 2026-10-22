@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -24,6 +25,7 @@ import (
 	"github.com/authelia/authelia/v4/internal/clock"
 	"github.com/authelia/authelia/v4/internal/configuration/schema"
 	"github.com/authelia/authelia/v4/internal/middlewares"
+	plussessions "github.com/authelia/authelia/v4/internal/plus/sessions"
 	"github.com/authelia/authelia/v4/internal/random"
 	"github.com/authelia/authelia/v4/internal/regulation"
 	"github.com/authelia/authelia/v4/internal/session"
@@ -45,6 +47,9 @@ type MockAutheliaCtx struct {
 	RandomMock       *MockRandom
 
 	Clock clock.Fixed
+
+	// PlusSessionsStore holds the user session records. authelia-plus.
+	PlusSessionsStore *PlusSessionsStore
 }
 
 // NewMockAutheliaCtx create an instance of AutheliaCtx mock.
@@ -215,6 +220,9 @@ func NewMockAutheliaCtx(t *testing.T) *MockAutheliaCtx {
 
 	providers.SessionProvider = session.NewProvider(config.Session, nil)
 
+	mockAuthelia.PlusSessionsStore = NewPlusSessionsStore()
+	providers.PlusSessions = plussessions.New(&config, mockAuthelia.PlusSessionsStore, &mockAuthelia.Clock)
+
 	providers.Regulator = regulation.NewRegulator(config.Regulation, providers.StorageProvider, &mockAuthelia.Clock)
 
 	mockAuthelia.TOTPMock = NewMockTOTP(mockAuthelia.Ctrl)
@@ -252,10 +260,35 @@ func NewMockAutheliaCtxWithUserSession(t *testing.T, userSession session.UserSes
 	t.Helper()
 
 	mock := NewMockAutheliaCtx(t)
+
+	mock.RecordUserSession(t, &userSession)
+
 	err := mock.Ctx.SaveSession(userSession)
 	require.NoError(t, err)
 
 	return mock
+}
+
+// EnforcePlusSessions makes the session provider reject revoked user sessions, and authenticated user sessions
+// without a record, as the server does. It's opt-in so the upstream tests, which save authenticated sessions directly,
+// keep working. authelia-plus.
+func (m *MockAutheliaCtx) EnforcePlusSessions() {
+	m.Ctx.Providers.SessionProvider.SetPlusSessions(m.Ctx.Providers.PlusSessions)
+}
+
+// RecordUserSession gives an authenticated user session without a session record one, as an authentication would.
+// authelia-plus.
+func (m *MockAutheliaCtx) RecordUserSession(t *testing.T, userSession *session.UserSession) {
+	t.Helper()
+
+	if userSession.Username == "" || userSession.PlusID != uuid.Nil {
+		return
+	}
+
+	id, err := m.Ctx.Providers.PlusSessions.Create(m.Ctx, userSession.Username, "192.0.2.1", "Mozilla/5.0", userSession.KeepMeLoggedIn, m.Ctx.Configuration.Session.Cookies[0], uuid.Nil, "")
+	require.NoError(t, err)
+
+	userSession.PlusID = id
 }
 
 // Close close the mock.

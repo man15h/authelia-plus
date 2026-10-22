@@ -173,6 +173,10 @@ func handlerMain(config *schema.Configuration, providers middlewares.Providers) 
 	r.HEAD("/static/media/logo.png", middlewares.AssetOverride(config.Server.AssetPath, 2, handlerPublicHTML))
 	r.GET("/static/media/logo.png", middlewares.AssetOverride(config.Server.AssetPath, 2, handlerPublicHTML))
 
+	// authelia-plus: the operator's stylesheet, see custom_css.go.
+	r.HEAD("/static/custom.css", newCustomCSSHandler(config.Server.AssetPath, handlerPublicHTML))
+	r.GET("/static/custom.css", newCustomCSSHandler(config.Server.AssetPath, handlerPublicHTML))
+
 	r.HEAD("/static/{filepath:*}", handlerPublicHTML)
 	r.GET("/static/{filepath:*}", handlerPublicHTML)
 
@@ -289,6 +293,26 @@ func handlerMain(config *schema.Configuration, providers middlewares.Providers) 
 		Build()
 
 	r.GET("/api/user/session/elevation", middleware1FA(handlers.UserSessionElevationGET))
+
+	// authelia-plus: the user's session list and revoke. No CORS policy and no GET form of the revoke. Revoking
+	// another session also needs an elevated session; the single revoke checks that itself, as revoking the current
+	// session doesn't.
+	middlewareFullAuth := middlewares.NewBridgeBuilder(*config, providers).
+		WithPreMiddlewares(middlewares.SecurityHeadersBase, middlewares.SecurityHeadersNoStore, middlewares.SecurityHeadersCSPNone).
+		WithPostMiddlewares(middlewares.RequireFullAuth).
+		Build()
+
+	// Revoking another session needs an elevated session so a stolen cookie can't lock the owner out. With
+	// identity_validation.elevated_session.skip_second_factor enabled, a 2FA cookie elevates without a one-time code,
+	// so a stolen one can revoke the owner's sessions again.
+	middlewareFullAuthElevated := middlewares.NewBridgeBuilder(*config, providers).
+		WithPreMiddlewares(middlewares.SecurityHeadersBase, middlewares.SecurityHeadersNoStore, middlewares.SecurityHeadersCSPNone).
+		WithPostMiddlewares(middlewares.RequireFullAuth, middlewares.RequireElevated).
+		Build()
+
+	r.GET("/api/plus/sessions", middlewareFullAuth(handlers.PlusSessionsGET))
+	r.DELETE("/api/plus/sessions", middlewareFullAuthElevated(handlers.PlusSessionsDELETE))
+	r.DELETE("/api/plus/sessions/{sessionID}", middlewareFullAuth(handlers.PlusSessionDELETE))
 	r.POST("/api/user/session/elevation", middlewareElevatePOST(handlers.UserSessionElevationPOST))
 	r.PUT("/api/user/session/elevation", middlewareElevatePUT(handlers.UserSessionElevationPUT))
 
@@ -416,6 +440,12 @@ func RegisterOpenIDConnectRoutes(r *router.Router, config *schema.Configuration,
 
 	r.OPTIONS(oidc.EndpointPathJWKs, policyCORSPublicGET.HandleOPTIONS)
 	r.GET(oidc.EndpointPathJWKs, middlewares.Wrap(middlewares.NewMetricsRequestOpenIDConnect(providers.Metrics, "jwks"), policyCORSPublicGET.Middleware(middlewareAPI(handlers.OAuth2JSONWebKeySetGET))))
+
+	// authelia-plus: OpenID Connect RP-Initiated Logout 1.0. Reached by the user agent, so no CORS.
+	endSession := middlewares.Wrap(middlewares.NewMetricsRequestOpenIDConnect(providers.Metrics, oidc.EndpointEndSession), bridge(middlewares.NewHTTPToAutheliaHandlerAdaptor(handlers.OAuth2EndSession)))
+
+	r.GET(oidc.EndpointPathEndSession, endSession)
+	r.POST(oidc.EndpointPathEndSession, endSession)
 
 	policyCORSAuthorization := middlewares.NewCORSPolicyBuilder().
 		WithAllowedMethods(fasthttp.MethodOptions, fasthttp.MethodGet, fasthttp.MethodPost).

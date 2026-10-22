@@ -10,6 +10,7 @@ import (
 
 	"github.com/fasthttp/session/v2"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/google/uuid"
 
 	"github.com/authelia/authelia/v4/internal/authorization"
 )
@@ -49,6 +50,16 @@ type UserSession struct {
 	RefreshTTL time.Time
 
 	Elevations Elevations
+
+	// OpenIDConnect tracks this session's OpenID Connect 1.0 logout state. authelia-plus.
+	OpenIDConnect *OpenIDConnectLogout `json:",omitempty"`
+
+	// PlusID is the ID of this session's record, which the user can list and revoke. authelia-plus.
+	PlusID uuid.UUID `json:",omitzero"`
+
+	// PlusLoginTimestamp is when the user logged in to this session. Unlike FirstFactorAuthnTimestamp, a
+	// re-authentication doesn't move it. authelia-plus.
+	PlusLoginTimestamp int64 `json:",omitempty"`
 }
 
 // TOTP holds the TOTP registration session data.

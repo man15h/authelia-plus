@@ -80,6 +80,14 @@ func NewConfig(config *schema.IdentityProvidersOpenIDConnect, issuer *Issuer, te
 		Config:   c,
 	}
 
+	// authelia-plus: used to validate the 'id_token_hint' of RP-Initiated Logout requests.
+	c.Strategy.IDTokenValidation = &openid.DefaultIDTokenValidationStrategy{Strategy: c.Strategy.JWT}
+
+	// authelia-plus: created up front because Logout Tokens are delivered from background goroutines, which would race
+	// on the lazy initialisation in GetHTTPClient. Its default logger writes unformatted lines to stderr, so it is off.
+	c.HTTPClient = retryablehttp.NewClient()
+	c.HTTPClient.Logger = nil
+
 	return c
 }
 
@@ -1120,10 +1128,12 @@ func (c *Config) GetIDTokenValidationStrategy(ctx context.Context) (strategy oau
 	return c.Strategy.IDTokenValidation
 }
 
-// GetBackChannelLogoutTokenStrategy returns the Back-Channel Logout token strategy. It is nil as this Authorization
-// Server does not implement OpenID Connect Back-Channel Logout 1.0.
+// GetBackChannelLogoutTokenStrategy returns the Back-Channel Logout token strategy, which signs Logout Tokens with
+// the same keys as ID Tokens. authelia-plus.
 func (c *Config) GetBackChannelLogoutTokenStrategy(ctx context.Context) (strategy oauthelia2.BackChannelLogoutTokenStrategy) {
-	return nil
+	strategy, _ = c.Strategy.OpenID.(oauthelia2.BackChannelLogoutTokenStrategy)
+
+	return strategy
 }
 
 // GetBackChannelLogoutLifespan returns the lifespan of a Back-Channel Logout Token.

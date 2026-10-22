@@ -240,6 +240,9 @@ type Provider interface {
 	// RevokeOAuth2SessionByRequestID marks an OAuth2.0 session as revoked in the storage provider.
 	RevokeOAuth2SessionByRequestID(ctx context.Context, sessionType OAuth2SessionType, requestID string) (err error)
 
+	// RevokeOAuth2SessionsByRequestIDs marks every OAuth2.0 session of the given requests as revoked. authelia-plus.
+	RevokeOAuth2SessionsByRequestIDs(ctx context.Context, requestIDs []string) (err error)
+
 	// DeactivateOAuth2Session marks an OAuth2.0 session as inactive in the storage provider.
 	DeactivateOAuth2Session(ctx context.Context, sessionType OAuth2SessionType, signature string) (err error)
 
